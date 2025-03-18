@@ -1,0 +1,11 @@
+{
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    "python.terminal.shellIntegration.enabled": true,
+    "python.languageServer": "Default",
+    "notebook.defaultFormatter": "vscode.markdown-language-features",
+    "editor.quickSuggestions": {
+        "comments": "on",
+        "strings": "on"
+    },
+    "workbench.editor.enablePreviewFromQuickOpen": true
+}
