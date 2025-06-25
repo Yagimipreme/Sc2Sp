@@ -7,6 +7,10 @@ import time
 import csv
 import os
 import json
+import subprocess
+import shutil
+import json
+import argparse
 
 import eyed3 #win machines also need : "pip install python-magic-bin"
 
@@ -15,13 +19,39 @@ import glob
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+url = ""
+path = ""
+topsong = ""
+is_timed = False
+t_end = time.time() + 10
+
+def load_config(filename="config.json"):
+    with open(filename, "r") as f:
+        config = json.load(f)
+    return config["url"], config["path"], config["topsong"]
+url, path, topsong = load_config()
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-s", help="full path to spotify-local-dir", type=str)
+parser.add_argument("-t", help="set topsong, script will only download songs listed above", type=str)
+args = parser.parse_args()
+
+if args.s :
+    print(f"setting spotify-dir to :{args.s}")
+    path = args.s
+    write_to_config(data=path, pos="path")
+
+if args.t :
+    print(f"setting topsong to :{args.t}")
+    topsong = args.t
+    write_to_config(data=topsong, pos="topsong")
+
 options = webdriver.ChromeOptions()
 options.add_argument("--detach")
-options.add_argument("--headless")  # Optional, wenn du den Browser im Hintergrund laufen lassen möchtest.
-download_dir = os.path.expanduser("~/home/glockstein/pr/SCtoSP/out")
+options.add_argument("--headless")  
 
 prefs = {
-    "download.default_directory": os.path.abspath(download_dir),
+    "download.default_directory": os.path.abspath(path),
     "download.prompt_for_download": False,
     "download.directory_upgrade": True,
     "safebrowsing.enabled": True,
@@ -29,59 +59,75 @@ prefs = {
     "profile.default_content_settings.popups": 0
 }
 
-# Write whole array song URLs to CSV
-def write_to_csv(song_list):
-    existing_songs = read_csv()
-    existing_songs.extend(song_list)
-    with open("songlist.csv", 'w', newling="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([json.dumps(existing_songs)]) #nimmt ganze liste
+options.add_experimental_option("prefs", prefs)
+driver = webdriver.Chrome(options=options)
 
+#Set playlist to keep looking at 
+def get_input():
+    print("Enter Playlist or UserLikes :")
+    url = input().strip()
+    write_to_config(data=url, pos="url")
+    return url
 
-# Read song URLs from CSV
-def read_csv():
-    if os.path.exists("songlist.csv") :
-        with open("songlist.csv", mode="r",encoding='utf-8') as csvfile:
-            reader = csv.reader(csvfile, delimiter=",")
-            existing_data = next(reader, ["[]"]) #if empty
-            try :
-                return json.loads(existing_data[0])
-            except json.JSONDecodeError as e :
-                print(f"JSONFEHLER: {e}")
-                return []
-    return []
+#Set spotify folder to get downloaded songs to 
+def set_spotify_folder():
+        path = input("Enter full-path to spotify-locale directory :").strip()
+        #resolved_path = os.path.expanduser(path)
+        resolved_path = os.path.abspath(path)
+        write_to_config(data=path, pos="path")
+        return path
+
+def set_topsong(topsong):
+    write_to_config(data=topsong, pos="topsong")
+
+def set_timed():
+    pass
+
+def write_to_config(data, pos, filename="config.json"):
+    with open(filename, "r") as f:
+        config = json.load(f)
+        config[pos] = data
+        with open(filename, "w") as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
 
 # Get song URLs from SoundCloud
 
-t_end = time.time() + 10
 def scroll(driver):
     ActionChains(driver).scroll_by_amount(0, 1000000).perform()
 
 def scroll_to_btn(driver, btn) :
     ActionChains(driver).scroll_to_element(btn)
 
-def getSongUrl(driver):
-    song_url_list = []
-    html = driver.get("https://soundcloud.com/user352647366/likes")
+def getSongUrl(driver, url, topsong):
+    # Initialize the Chrome driver
+    print("Starting webdriver on :{url}")
+    song_url_list = set()
+    html = driver.get(url)
     time.sleep(2)  # Give time to load the page
 
     # Wait for the list of songs to be present
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "soundList__item")))
 
-    while (time.time() < t_end):
-        scroll(driver)
-        time.sleep(1)
+    start_time = time.time()
 
-    # Parse the page content
-    soup = BeautifulSoup(driver.page_source, "html.parser")
+    while True:
+        # Parse the page content
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        topsong = soup.find("li", class_="soundList__item")
+        for url in soup.find_all("li", class_="soundList__item"):
+            if not url:
+                print("No songs found..")
+                break
+            if url != topsong:
+                song_url = url.find("a", class_="sc-link-primary")["href"]
+                song_url_list.add("https://soundcloud.com"+song_url)
+            else : print(f"Topsong reached :{topsong}") 
+            break
 
-    for url in soup.find_all("li", class_="soundList__item"):
-        song_url = url.find("a", class_="sc-link-primary")["href"]
-        song_url_list.append("https://soundcloud.com"+song_url)
+    scroll(driver)
+    time.sleep(1)
 
-    return song_url_list
-    write_to_csv(song_url_list)
-    #read_csv()
+    return song_url_list, topsong
 
 # Get artwork and MP3 for each song
 def getArtworks2(driver, song_url):
@@ -143,20 +189,22 @@ def getArtworks2(driver, song_url):
         print(f"Error downloading: {e}")
 
 # Main code to check songs in the directory and fetch if missing
-def check_and_download_songs(driver):
-    song_url_list = getSongUrl(driver)
-    csv_song_list = read_csv()
+def check_and_download_songs(driver, url, path, topsong):
+    load_config()
+    if url == "":
+        get_input()
+    else:
+        if path == "":
+            set_spotify_folder()
+
+    song_url_list = getSongUrl(driver, url=url, topsong=topsong)
+    set_topsong(topsong=topsong)
 
     # Check each song's presence in the Music directory
-    if not song_url_list == csv_song_list:
-        # You need to define this function
-        for song_url in song_url_list:
-            print("song_url" + song_url)
-            getArtworks2(driver, song_url)
+    for song_url in song_url_list:
+        print("song_url" + song_url)
+        getArtworks2(driver, song_url)
     driver.quit()
 
-# Initialize the Chrome driver
-driver = webdriver.Chrome(options=options)
-options.add_experimental_option("prefs", prefs)
-
-check_and_download_songs(driver)
+load_config()
+check_and_download_songs(driver, url=url, path=path, topsong=topsong)

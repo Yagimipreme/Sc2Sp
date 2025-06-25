@@ -1,39 +1,44 @@
-import csv
-import json
 import os
+import json
+import subprocess
+import shutil
+import pathlib
+import argparse
+import json 
 
-# Song-URLs in die CSV schreiben
-def test_write(song_list):
-    # Wenn Datei existiert, bestehende Songs laden
-    existing_songs = read_csv()
+url = ""
+path = ""
+topsong = ""
+is_timed = False
 
-    # Neue Songs hinzufügen
-    existing_songs.extend(song_list)
+def load_config(filename="config.json"):
+    with open(filename, "r") as f:
+        config = json.load(f)
+    return config["url"], config["path"], config["topsong"]
+url, path, topsong = load_config()
 
-    # In CSV-Datei speichern
-    with open("songlist.csv", mode='w', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow([json.dumps(existing_songs)])  # JSON-Format beibehalten
 
-# Song-URLs aus CSV lesen
-def read_csv():
-    if os.path.exists("songlist.csv"):
-        with open("songlist.csv", mode="r", encoding='utf-8') as csvfile:
-            reader = csv.reader(csvfile, delimiter=",")
-            existing_data = next(reader, ["[]"])  # Falls Datei leer ist
+def get_input():
+        print("Enter Path :")
+        path = input().strip()
+        return path
 
-            try:
-                return json.loads(existing_data[0])  # JSON-Daten laden
-            except json.JSONDecodeError as e:
-                print(f"JSON-Fehler: {e}")
-                return []
-    return []
+load_config()
 
-# Test-Daten
-test_result = [
-    "https://soundcloud.com/yunglasso/schneller-als-das-licht-dj-haaland-schranz-remix",
-    "https://soundcloud.com/trancestrudel/filow-rasenschach-atzen-remix-free-dl"
-]
+def write_to_config(data, pos, filename="config.json"):
+    with open(filename, "r") as f:
+        config = json.load(f)
+        config[pos] = data
 
-test_write(test_result)
-print(read_csv())  # Sollte die gleiche Struktur zurückgeben
+        with open(filename, "w") as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+
+testarr = ["a", "b", "c", "d"]
+
+for i in testarr:
+    if i == topsong :
+        
+
+#print(f"url : {url}")
+#print(f"path : {path}")
+print(f"topsong : {topsong}")
