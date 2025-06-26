@@ -1,3 +1,5 @@
 venv/
 out/
 artworks/
+.vscode/
+testscript.py
