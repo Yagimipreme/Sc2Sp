@@ -10,11 +10,11 @@ import json
 import subprocess
 import shutil
 import json
+import random
 import argparse
+import glob
 
 import eyed3 #win machines also need : "pip install python-magic-bin"
-
-import glob
 
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -47,8 +47,16 @@ if args.t :
     write_to_config(data=topsong, pos="topsong")
 
 options = webdriver.ChromeOptions()
-options.add_argument("--detach")
-#options.add_argument("--headless")  
+#options.add_argument("--detach")
+options.add_argument("--disable-popup-blocking")
+options.add_argument("--window-size=1000,1000")
+options.add_argument("--disable-blink-features=AutomationControlled")
+#options.add_argument("--disable-gpu") seems to break under linux
+options.add_argument("--no-sandbox")
+#options.add_argument("--start-maximized")
+options.add_argument("--headless=new")  
+options.add_experimental_option("excludeSwitches", ["enable-automation"])
+options.add_experimental_option('useAutomationExtension', False)
 
 prefs = {
     "download.default_directory": os.path.abspath(path),
@@ -59,8 +67,14 @@ prefs = {
     "profile.default_content_settings.popups": 0
 }
 
+#Ublock 
+extension_path = os.path.abspath("ublock.crx")
+options.add_extension(extension_path)
+
 options.add_experimental_option("prefs", prefs)
+
 driver = webdriver.Chrome(options=options)
+#driver = webdriver.Chrome()
 
 #Set playlist to keep looking at 
 def get_input():
@@ -90,7 +104,17 @@ def write_to_config(data, pos, filename="config.json"):
         with open(filename, "w") as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
 
-# Get song URLs from SoundCloud
+def wait_for_download(path, timeout=300):
+    seconds = 0
+    while True:
+        files = glob.glob(os.path.join(path, "*.crdownload"))
+        if not files: 
+            break
+        time.sleep(2)
+        seconds +=1
+        if seconds > timeout:
+            raise Exception("Download Timeout")
+    print("Download complete")
 
 def scroll(driver):
     ActionChains(driver).scroll_by_amount(0, 1000000).perform()
@@ -102,7 +126,7 @@ def getSongUrl(driver, url, topsong):
     # Initialize the Chrome driver
     print(f"Starting webdriver on :{url}")
     print(f"Topsong :{topsong}")
-    song_url_list = set()
+    song_url_list = []
     html = driver.get(url)
     time.sleep(2)  # Give time to load the page
 
@@ -127,7 +151,7 @@ def getSongUrl(driver, url, topsong):
                 song_url = item.find("a", class_="sc-link-primary")["href"]
                 if song_url not in song_url_list:
                     print(f"FOUND :{song_url}")
-                    song_url_list.add(song_url)
+                    song_url_list.append(song_url)
                 
                 if song_url == topsong:
                     print(f"Topsong reached :{topsong}")
@@ -144,76 +168,52 @@ def getSongUrl(driver, url, topsong):
         scroll(driver)
         time.sleep(2)
 
-    return song_url_list, topsong
+    return list(song_url_list), topsong#noch topsong zurückgeben
 
 # Get artwork and MP3 for each song
 def getArtworks2(driver, song_url, path):
+    print(f"PATH :{path}")
     wait = WebDriverWait(driver, 30)
-    driver.set_window_size(width=1000, height=1000)  # Für headless notwendig
+    #driver.set_window_size(width=1000, height=1000)  # Für headless notwendig
     driver.get("https://soundcloudsdownloader.com/soundcloud-artwork-downloader/")
-    time.sleep(5)
 
     # Eingabefeld und Button finden
     input_field = driver.find_element(By.TAG_NAME, "input")
     button = driver.find_element(By.ID, "codehap_submit")
 
     # URL eingeben und abschicken
-    input_field.send_keys(song_url)
+    print(song_url)
+    input_field.send_keys("https://soundcloud.com"+song_url)
     button.click()
-    time.sleep(5)
-
+    print(f"Song submitted")
     try:
-        # MP3 Download
-        button_download_mp3 = driver.find_element(By.CLASS_NAME, "chbtn")
-        wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "chbtn")))
+        time.sleep(random.uniform(3,6))
+        button_download_mp3 = WebDriverWait(driver, 100).until(EC.element_to_be_clickable((By.CLASS_NAME, "chbtn")))
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        driver.execute_script("arguments[0].scrollIntoView(true);", button_download_mp3)
+        time.sleep(random.uniform(2,6))
+        button_download_mp3 = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "chbtn")))
         button_download_mp3.click()
-        time.sleep(2)
+        wait_for_download(path=path)
         print(f"MP3 Downloaded! : {song_url}")
-
-        # Move MP3 file
-        downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")
-        mp3_files = glob.glob(os.path.join(downloads_folder, '*.mp3'))
-        latest_mp3 = max(mp3_files, key=os.path.getctime)
-        print(f"Latest MP3: {latest_mp3}")
-
-        mp3_out_folder = os.path.join(path, "out")
-        os.makedirs(mp3_out_folder, exist_ok=True)
-        mp3_file_path = os.path.join(mp3_out_folder, os.path.basename(latest_mp3))
-        os.replace(latest_mp3, mp3_file_path)
-
-        # Artwork Download
-        button_download_artwork = driver.find_element(By.CLASS_NAME, "chbtn2")
-        button_download_artwork.click()
-        time.sleep(2)
-        print(f"Artwork Downloaded! : {song_url}")
-
-        # Move artwork file
-        jpg_files = glob.glob(os.path.join(downloads_folder, '*.jpg'))
-        latest_artwork = max(jpg_files, key=os.path.getctime)
-        print(f"Latest Artwork: {latest_artwork}")
-
-        artwork_folder = os.path.join(path, "artworks")
-        os.makedirs(artwork_folder, exist_ok=True)
-        artwork_file_path = os.path.join(artwork_folder, os.path.basename(latest_artwork))
-        os.replace(latest_artwork, artwork_file_path)
-
-        # Add artwork to MP3 metadata
-        try:
-            audiofile = eyed3.load(mp3_file_path)
-            if audiofile.tag is None:
-                audiofile.initTag()
-            with open(artwork_file_path, "rb") as img:
-                audiofile.tag.images.set(3, img.read(), "image/jpeg")
-            audiofile.tag.save()
-            print("Artwork in metadata hinzugefügt")
-        except Exception as e:
-            print(f"Fehler eyed3: {e}")
-
     except Exception as e:
-        print(f"Error downloading: {e}")
+        print(f"Err clickinf download-btn :{e}")
+        with open("debug.html", "w") as f:
+            f.write(driver.page_source)
+
+    # Artwork Download
+    try: 
+        button_download_artwork = driver.find_element(By.CLASS_NAME, "chbtn2")
+        time.sleep(random.uniform(2,6))
+        button_download_artwork.click()
+        wait_for_download(path=path)
+        print(f"Artwork Downloaded! : {song_url}")
+        time.sleep(random.uniform(3,6))
+    except Exception as e:
+        print(f"Could not download artwork")
 
 
-# Main code to check songs in the directory and fetch if missing
+# Main code 
 def check_and_download_songs(driver, url, path, topsong):
     load_config()
     if url == "":
@@ -222,15 +222,76 @@ def check_and_download_songs(driver, url, path, topsong):
         if path == "":
             set_spotify_folder()
 
-    song_url_list = getSongUrl(driver, url=url, topsong=topsong)
+    song_url_list, topsong = getSongUrl(driver, url=url, topsong=topsong)
     set_topsong(topsong=topsong)
-
-    # Check each song's presence in the Music directory
-    for song_url in song_url_list:
+    print(song_url_list)
+    # Download artwork and eyed3 into the mp3 for each song
+    for song_url in list(song_url_list):
         print(f"song_url :{song_url}")
         getArtworks2(driver, song_url, path=path)
+        time.sleep(3)
+        add_artwork_to_mp3(get_latest_mp3(path),path)
+
     driver.quit()
 
-load_config()
-getArtworks2(driver, "https://soundcloud.com/crim3s/stay-ugly", path=path)
-#check_and_download_songs(driver, url=url, path=path, topsong=topsong)
+def add_artwork_to_mp3(mp3_file_path, download_folder):
+    try:
+        # Suche nach JPG oder PNG
+        image_files = glob.glob(os.path.join(download_folder, '*.jpg')) + \
+                      glob.glob(os.path.join(download_folder, '*.png'))
+
+        if not image_files:
+            print("Kein Artwork gefunden.")
+            return
+
+        # Neueste Bilddatei auswählen
+        latest_artwork = max(image_files, key=os.path.getctime)
+        print(f"Gefundenes Artwork: {latest_artwork}")
+
+        # Bestimme MIME-Type
+        if latest_artwork.lower().endswith('.png'):
+            mime_type = "image/png"
+        else:
+            mime_type = "image/jpeg"
+
+        # MP3 laden
+        audiofile = eyed3.load(mp3_file_path)
+        if audiofile is None:
+            print("MP3 konnte nicht geladen werden.")
+            return
+
+        if audiofile.tag is None:
+            audiofile.initTag()
+
+        # Artwork hinzufügen
+        with open(latest_artwork, "rb") as img_fp:
+            audiofile.tag.images.set(
+                3,  # Front cover
+                img_fp.read(),
+                mime_type
+            )
+
+        audiofile.tag.save()
+        print("Artwork erfolgreich in MP3 eingebettet.")
+
+        # Artwork verschieben
+        artwork_folder = os.path.join(download_folder, "artworks")
+        os.makedirs(artwork_folder, exist_ok=True)
+        new_artwork_path = os.path.join(artwork_folder, os.path.basename(latest_artwork))
+        os.replace(latest_artwork, new_artwork_path)
+        print(f"🗂️ Artwork verschoben nach: {new_artwork_path}")
+
+    except Exception as e:
+        print(f"Fehler beim Hinzufügen des Artworks: {e}")
+
+def get_latest_mp3(download_folder): 
+        mp3_files = glob.glob(os.path.join(download_folder, '*mp3'))
+        if not mp3_files:
+            print("No mp3 found for eyed3")
+            return None
+        latest_mp3 = max(mp3_files, key=os.path.getctime)
+        return latest_mp3
+
+#add_artwork_to_mp3(get_latest_mp3(path),download_folder=download_folder)
+check_and_download_songs(driver, url=url, path=path, topsong=topsong)
+#print(audiofile = eyed3.load('Moneyboy-Monte Carlo(Franzhakke Edit).mp3'))
