@@ -2,79 +2,38 @@ from selenium.webdriver.common.by import By
 from selenium import webdriver
 from selenium.webdriver import ActionChains
 from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup
 import time
 import csv
 import os
-import json
 import subprocess
 import shutil
 import json
 import random
 import argparse
 import glob
-
+from dotenv import load_dotenv
 import eyed3 #win machines also need : "pip install python-magic-bin"
 
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-url = ""
-path = ""
-topsong = ""
-is_timed = False
-t_end = time.time() + 10
+BASE = "https://soundcloud.com"
 
 def load_config(filename="config.json"):
-    with open(filename, "r") as f:
-        config = json.load(f)
-    return config["url"], config["path"], config["topsong"]
-url, path, topsong = load_config()
-
-parser = argparse.ArgumentParser()
-parser.add_argument("-s", help="full path to spotify-local-dir", type=str)
-parser.add_argument("-t", help="set topsong, script will only download songs listed above", type=str)
-args = parser.parse_args()
-
-if args.s :
-    print(f"setting spotify-dir to :{args.s}")
-    path = args.s
-    write_to_config(data=path, pos="path")
-
-if args.t :
-    print(f"setting topsong to :{args.t}")
-    topsong = args.t
-    write_to_config(data=topsong, pos="topsong")
-
-options = webdriver.ChromeOptions()
-#options.add_argument("--detach")
-options.add_argument("--disable-popup-blocking")
-options.add_argument("--window-size=1000,1000")
-options.add_argument("--disable-blink-features=AutomationControlled")
-#options.add_argument("--disable-gpu") seems to break under linux
-options.add_argument("--no-sandbox")
-#options.add_argument("--start-maximized")
-options.add_argument("--headless=new")  
-options.add_experimental_option("excludeSwitches", ["enable-automation"])
-options.add_experimental_option('useAutomationExtension', False)
-
-prefs = {
-    "download.default_directory": os.path.abspath(path),
-    "download.prompt_for_download": False,
-    "download.directory_upgrade": True,
-    "safebrowsing.enabled": True,
-    "detach": True,
-    "profile.default_content_settings.popups": 0
-}
-
-#Ublock 
-extension_path = os.path.abspath("ublock.crx")
-options.add_extension(extension_path)
-
-options.add_experimental_option("prefs", prefs)
-
-driver = webdriver.Chrome(options=options)
-#driver = webdriver.Chrome()
+    global url, path, topsong, is_timed
+    try:
+        with open(filename, "r") as f:
+            config = json.load(f)
+            url = config.get("url", "")
+            path = config.get("path", "")
+            topsong = config.get("topsong", "")
+            if topsong == "":
+                is_timed = True
+            else:
+                is_timed = config.get("is_timed", False)
+            print(f"Config loaded : url={url}, path={path}, topsong={topsong}, is_timed={is_timed}")
+    except FileNotFoundError:
+        print("Config file not found.")
 
 #Set playlist to keep looking at 
 def get_input():
@@ -122,53 +81,88 @@ def scroll(driver):
 def scroll_to_btn(driver, btn) :
     ActionChains(driver).scroll_to_element(btn)
 
+def _to_abs(href: str) -> str:
+    if not href:
+        return ""
+    href = href.strip()
+    return href if href.startswith("http") else (BASE + href)
+
+def _norm(u: str) -> str:
+    # einfache Normalisierung für den Vergleich
+    return _to_abs(u).rstrip("/")
+
 def getSongUrl(driver, url, topsong):
     # Initialize the Chrome driver
     print(f"Starting webdriver on :{url}")
     print(f"Topsong :{topsong}")
-    song_url_list = []
-    html = driver.get(url)
+    driver.get(url)
     time.sleep(2)  # Give time to load the page
 
     # Wait for the list of songs to be present
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "soundList__item")))
+    WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "li.soundList__item")))
+    time.sleep(1)
+
+    seen_hrefs = set()
+    items = []
+
+    max_scrolls = 60
+    min_wait_new = 0.5
+    wait = WebDriverWait(driver, 10)
 
     start_time = time.time()
 
-    while True:
-        # Parse the page content
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        song_elements = soup.find_all("li", class_="soundList__item")
-
-        if not song_elements:
-            print(f"No songs found..")
-            break
+    for i in range(max_scrolls):
+        anchors = driver.find_elements(
+            By.CSS_SELECTOR, "li.soundcloud__item a.sc-link-primary[href]"
+        )
 
         found_topsong = False
-
-        for item in song_elements:
+        for a in anchors:
             try:
-                song_url = item.find("a", class_="sc-link-primary")["href"]
-                if song_url not in song_url_list:
-                    print(f"FOUND :{song_url}")
-                    song_url_list.append(song_url)
-                
-                if song_url == topsong:
-                    print(f"Topsong reached :{topsong}")
+                href = _to_abc(a.get_attribute("href"))
+                if not href or href in seen_hrefs:
+                    continue
+
+                title = a.text.strip()
+                seen_hrefs.add(href)
+                items.append({"title": title, "href": href})
+                print(f"FOUND: {title} -> {href}")
+
+                if topsong_norm and _norm(hreef) == topsong_norm:
+                    print(f"Topsong reached: {topsong_norm}")
                     found_topsong = True
                     break
-
             except Exception as e:
-                print(f"Failed at :{e}")
+                print(f"Failed extracting href anchor :{e}")
                 continue
 
         if found_topsong:
             break
 
-        scroll(driver)
-        time.sleep(2)
+        #how many before last scroll
+        before = len(seen_hrefs)
 
-    return list(song_url_list), topsong#noch topsong zurückgeben
+        #scrollen
+        driver.execute_script("window.scrollBy(0, document.body.scrollHeight)")
+        try:
+            wait.until(lambda d: len(d.find_elements(
+                By.CSS_SELECTOR, "li.soundList__item a.sc-link-primary[href]"
+            )) > len(anchors))
+        except Exception:
+            time.sleep(min_wait_new)
+            after = len(seen_hrefs)
+            if after == before :
+                print("No more new items after scroll -> stopping.")
+                break
+    href_list = [it["href"] for it in items]
+
+    if topsong_norm:
+        cut_idx = next((i for i, it in enumerate(items) if _norm(it["href"]) == topsong_norm), None)
+        if cut_idx is not None:
+            items = items[:cut_idx]     # ohne Topsong
+            href_list = [it["href"] for it in items]
+
+    return href_list, items, topsong
 
 # Get artwork and MP3 for each song
 def getArtworks2(driver, song_url, path):
@@ -279,7 +273,7 @@ def add_artwork_to_mp3(mp3_file_path, download_folder):
         os.makedirs(artwork_folder, exist_ok=True)
         new_artwork_path = os.path.join(artwork_folder, os.path.basename(latest_artwork))
         os.replace(latest_artwork, new_artwork_path)
-        print(f"🗂️ Artwork verschoben nach: {new_artwork_path}")
+        print(f"Artwork verschoben nach: {new_artwork_path}")
 
     except Exception as e:
         print(f"Fehler beim Hinzufügen des Artworks: {e}")
@@ -292,6 +286,72 @@ def get_latest_mp3(download_folder):
         latest_mp3 = max(mp3_files, key=os.path.getctime)
         return latest_mp3
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-s", help="full path to spotify-local-dir", type=str)
+    parser.add_argument("-t", help="set topsong, script will only download songs listed above", type=str)
+    args = parser.parse_args()
+
+    #Parsing arguments
+    if args.s :
+        print(f"setting spotify-dir to :{args.s}")
+        path = args.s
+        write_to_config(data=path, pos="path")
+
+    if args.t :
+        print(f"setting topsong to :{args.t}")
+        topsong = args.t
+        write_to_config(data=topsong, pos="topsong")
+
+    url = "https://soundcloud.com/user352647366/likes"
+    path = ""
+    topsong = ""
+    is_timed = False
+    t_end = time.time() + 10
+
+    #Get necessary config
+    load_config()
+
+    if url == "":
+        print("No URL set!")
+        url = get_input()
+
+    #Selenium Chrome Options
+    options = webdriver.ChromeOptions()
+    #options.add_argument("--detach")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--window-size=1000,1000")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    #options.add_argument("--disable-gpu") seems to break under linux
+    options.add_argument("--no-sandbox")
+    #options.add_argument("--start-maximized")
+    options.add_argument("--headless=new")  
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+
+    prefs = {
+        "download.default_directory": os.path.abspath(path),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+        "detach": True,
+        "profile.default_content_settings.popups": 0
+    }
+
+    #Ublock 
+    extension_path = os.path.abspath("ublock.crx")
+    options.add_extension(extension_path)
+
+    options.add_experimental_option("prefs", prefs)
+
+    #Starting webdriver
+    driver = webdriver.Chrome(options=options)
+
+    #Starting new scraping session
+    getSongUrl(driver, url=url, topsong=topsong)
+
+
 #add_artwork_to_mp3(get_latest_mp3(path),download_folder=download_folder)
-check_and_download_songs(driver, url=url, path=path, topsong=topsong)
-#print(audiofile = eyed3.load('Moneyboy-Monte Carlo(Franzhakke Edit).mp3'))
+#ächeck_and_download_songs(driver, url=url, path=path, topsong=topsong)
+#audiofile = eyed3.load('/home/glockstein/Songs/Santigold - Disparate Youth [Rave Edit] (FREE DL).mp3')
+#print(audiofile.tag.images)
