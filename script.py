@@ -2,6 +2,7 @@ from selenium.webdriver.common.by import By
 from selenium import webdriver
 from selenium.webdriver import ActionChains
 from selenium.webdriver.chrome.options import Options
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import csv
 import os
@@ -9,10 +10,11 @@ import subprocess
 import shutil
 import json
 import random
+import re
 import argparse
 import glob
-from dotenv import load_dotenv
-import eyed3 #win machines also need : "pip install python-magic-bin"
+
+import script2
 
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -34,6 +36,55 @@ def load_config(filename="config.json"):
             print(f"Config loaded : url={url}, path={path}, topsong={topsong}, is_timed={is_timed}")
     except FileNotFoundError:
         print("Config file not found.")
+
+from urllib.parse import urljoin, urlparse, urlunparse, unquote
+
+def _to_abc(href: str, base: str = "https://soundcloud.com") -> str | None:
+    """
+    Macht aus einem href eine absolute, bereinigte SoundCloud-URL:
+    - ignoriert javascript:, mailto:, #...
+    - macht relative Links absolut (urljoin mit base)
+    - entfernt Query + Fragment
+    - normalisiert Host + Pfad
+    """
+    if not href:
+        return None
+    href = href.strip()
+    if href.startswith(("javascript:", "mailto:", "#")):
+        return None
+
+    abs_url = urljoin(base, href)
+    u = urlparse(abs_url)
+
+    # Nur SoundCloud-Links zulassen (alles andere ignorieren)
+    host = u.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host.endswith("soundcloud.com"):
+        return None
+
+    path = unquote(u.path)
+    path = re.sub(r"/+", "/", path).rstrip("/")  # // → / ; trailing slash weg
+    return urlunparse((u.scheme, host, path, "", "", ""))
+
+def _norm(s: str) -> str:
+    """
+    Normiert eine (evtl. relative) URL für stabile Vergleiche:
+    - host ohne www., lowercase
+    - nur host + path (ohne query/fragment)
+    - Pfad ohne trailing slash, dekodiert, // → /
+    """
+    if not s:
+        return ""
+    # Relatives als SoundCloud-URL interpretieren
+    if not re.match(r"^https?://", s):
+        s = urljoin("https://soundcloud.com", s)
+    u = urlparse(s)
+    host = u.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = re.sub(r"/+", "/", unquote(u.path)).rstrip("/")
+    return f"{host}{path}"
 
 #Set playlist to keep looking at 
 def get_input():
@@ -91,7 +142,16 @@ def _norm(u: str) -> str:
     # einfache Normalisierung für den Vergleich
     return _to_abs(u).rstrip("/")
 
-def getSongUrl(driver, url, topsong):
+def get_latest_mp3(download_folder): 
+        mp3_files = glob.glob(os.path.join(download_folder, '*mp3'))
+        if not mp3_files:
+            print("No mp3 found for eyed3")
+            return None
+        latest_mp3 = max(mp3_files, key=os.path.getctime)
+        return latest_mp3
+
+def getSongUrl(driver, url, topsong, on_item=None):
+    topsong_norm = _norm(topsong) if topsong else None
     # Initialize the Chrome driver
     print(f"Starting webdriver on :{url}")
     print(f"Topsong :{topsong}")
@@ -105,7 +165,7 @@ def getSongUrl(driver, url, topsong):
     seen_hrefs = set()
     items = []
 
-    max_scrolls = 60
+    max_scrolls = 4
     min_wait_new = 0.5
     wait = WebDriverWait(driver, 10)
 
@@ -113,7 +173,7 @@ def getSongUrl(driver, url, topsong):
 
     for i in range(max_scrolls):
         anchors = driver.find_elements(
-            By.CSS_SELECTOR, "li.soundcloud__item a.sc-link-primary[href]"
+            By.CSS_SELECTOR, "li.soundList__item a.sc-link-primary[href]"
         )
 
         found_topsong = False
@@ -128,8 +188,14 @@ def getSongUrl(driver, url, topsong):
                 items.append({"title": title, "href": href})
                 print(f"FOUND: {title} -> {href}")
 
-                if topsong_norm and _norm(hreef) == topsong_norm:
-                    print(f"Topsong reached: {topsong_norm}")
+                if on_item:
+                    try:
+                        on_item(title, href)
+                    except Exception as e:
+                        print(f"[ERROR] on_item callback failed for {title} / {href} :{e}")
+
+                if topsong_norm and _norm(href) == topsong_norm:
+                    print(f"[INFO] Topsong reached: {topsong_norm}")
                     found_topsong = True
                     break
             except Exception as e:
@@ -144,6 +210,7 @@ def getSongUrl(driver, url, topsong):
 
         #scrollen
         driver.execute_script("window.scrollBy(0, document.body.scrollHeight)")
+        time.sleep(random.uniform(2.0, 5.0))
         try:
             wait.until(lambda d: len(d.find_elements(
                 By.CSS_SELECTOR, "li.soundList__item a.sc-link-primary[href]"
@@ -164,127 +231,51 @@ def getSongUrl(driver, url, topsong):
 
     return href_list, items, topsong
 
-# Get artwork and MP3 for each song
-def getArtworks2(driver, song_url, path):
-    print(f"PATH :{path}")
-    wait = WebDriverWait(driver, 30)
-    #driver.set_window_size(width=1000, height=1000)  # Für headless notwendig
-    driver.get("https://soundcloudsdownloader.com/soundcloud-artwork-downloader/")
+def make_download_job():
+    def job(title, href, out_dir):
+        try:
+            #script2 krams hier
+            pass
+        except Exception as e:
+            print(f"[ERROR] Download of {title} from {href} failed :{e}")
+    return job
 
-    # Eingabefeld und Button finden
-    input_field = driver.find_element(By.TAG_NAME, "input")
-    button = driver.find_element(By.ID, "codehap_submit")
+def submitter(title, href):
+    #fut = executor.submit(make_download_job(), title, href, out_dir=path)
+    fut = executor.submit(script2.process_track,href, client_id="3WvMqSrX1K9rBNLGUNhUO9KRbVOUR9uT", out_dir=path, title_override=title)
+    futures.append(fut)
+    return fut
 
-    # URL eingeben und abschicken
-    print(song_url)
-    input_field.send_keys("https://soundcloud.com"+song_url)
-    button.click()
-    print(f"Song submitted")
-    try:
-        time.sleep(random.uniform(3,6))
-        button_download_mp3 = WebDriverWait(driver, 100).until(EC.element_to_be_clickable((By.CLASS_NAME, "chbtn")))
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        driver.execute_script("arguments[0].scrollIntoView(true);", button_download_mp3)
-        time.sleep(random.uniform(2,6))
-        button_download_mp3 = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "chbtn")))
-        button_download_mp3.click()
-        wait_for_download(path=path)
-        print(f"MP3 Downloaded! : {song_url}")
-    except Exception as e:
-        print(f"Err clickinf download-btn :{e}")
-        with open("debug.html", "w") as f:
-            f.write(driver.page_source)
+def slugify(name: str) -> str:
+    s = re.sub(r"[^\w\s.-]", "", name).strip().replace(" ", "_")
+    return s[:120] or "track"
 
-    # Artwork Download
-    try: 
-        button_download_artwork = driver.find_element(By.CLASS_NAME, "chbtn2")
-        time.sleep(random.uniform(2,6))
-        button_download_artwork.click()
-        wait_for_download(path=path)
-        print(f"Artwork Downloaded! : {song_url}")
-        time.sleep(random.uniform(3,6))
-    except Exception as e:
-        print(f"Could not download artwork")
+def on_item(title, href):
+    return executor.submit(downloader.process_track, href, client_id, out_dir, title_override=title)
 
+def process_track(href: str, client_id: str, out_dir: str = ".", title_override: str | None = None) -> dict:
+    """
+    End-to-End: resolve -> Cover laden -> m3u8 holen -> ffmpeg -> MP3.
+    Gibt Pfade zurück.
+    """
+    track = resolve_track(href, client_id)
+    title = title_override or track.get("title") or "track"
+    base = slugify(title)
+    os.makedirs(out_dir, exist_ok=True)
 
-# Main code 
-def check_and_download_songs(driver, url, path, topsong):
-    load_config()
-    if url == "":
-        get_input()
-    else:
-        if path == "":
-            set_spotify_folder()
+    cover = os.path.join(out_dir, f"{base}.jpg")
+    transcoding = pick_hls_transcoding(track, art_out_path=cover)
+    m3u8 = get_playback_m3u8_url(transcoding["url"], client_id, track.get("track_authorization"))
 
-    song_url_list, topsong = getSongUrl(driver, url=url, topsong=topsong)
-    set_topsong(topsong=topsong)
-    print(song_url_list)
-    # Download artwork and eyed3 into the mp3 for each song
-    for song_url in list(song_url_list):
-        print(f"song_url :{song_url}")
-        getArtworks2(driver, song_url, path=path)
-        time.sleep(3)
-        add_artwork_to_mp3(get_latest_mp3(path),path)
+    mp3 = os.path.join(out_dir, f"{base}.mp3")
+    # Idempotenz: wenn schon vorhanden, überspringen (optional)
+    if not os.path.exists(mp3):
+        run_ffmpeg_to_mp3(m3u8, mp3, art_out_path=cover)
 
-    driver.quit()
+    return {"title": title, "mp3": mp3, "cover": cover, "m3u8": m3u8}
 
-def add_artwork_to_mp3(mp3_file_path, download_folder):
-    try:
-        # Suche nach JPG oder PNG
-        image_files = glob.glob(os.path.join(download_folder, '*.jpg')) + \
-                      glob.glob(os.path.join(download_folder, '*.png'))
-
-        if not image_files:
-            print("Kein Artwork gefunden.")
-            return
-
-        # Neueste Bilddatei auswählen
-        latest_artwork = max(image_files, key=os.path.getctime)
-        print(f"Gefundenes Artwork: {latest_artwork}")
-
-        # Bestimme MIME-Type
-        if latest_artwork.lower().endswith('.png'):
-            mime_type = "image/png"
-        else:
-            mime_type = "image/jpeg"
-
-        # MP3 laden
-        audiofile = eyed3.load(mp3_file_path)
-        if audiofile is None:
-            print("MP3 konnte nicht geladen werden.")
-            return
-
-        if audiofile.tag is None:
-            audiofile.initTag()
-
-        # Artwork hinzufügen
-        with open(latest_artwork, "rb") as img_fp:
-            audiofile.tag.images.set(
-                3,  # Front cover
-                img_fp.read(),
-                mime_type
-            )
-
-        audiofile.tag.save()
-        print("Artwork erfolgreich in MP3 eingebettet.")
-
-        # Artwork verschieben
-        artwork_folder = os.path.join(download_folder, "artworks")
-        os.makedirs(artwork_folder, exist_ok=True)
-        new_artwork_path = os.path.join(artwork_folder, os.path.basename(latest_artwork))
-        os.replace(latest_artwork, new_artwork_path)
-        print(f"Artwork verschoben nach: {new_artwork_path}")
-
-    except Exception as e:
-        print(f"Fehler beim Hinzufügen des Artworks: {e}")
-
-def get_latest_mp3(download_folder): 
-        mp3_files = glob.glob(os.path.join(download_folder, '*mp3'))
-        if not mp3_files:
-            print("No mp3 found for eyed3")
-            return None
-        latest_mp3 = max(mp3_files, key=os.path.getctime)
-        return latest_mp3
+executor = ThreadPoolExecutor(max_workers=3)#
+futures = []
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -348,10 +339,19 @@ if __name__ == "__main__":
     driver = webdriver.Chrome(options=options)
 
     #Starting new scraping session
-    getSongUrl(driver, url=url, topsong=topsong)
+    print("[INFO] Starting new session")
+    getSongUrl(driver, url=url, topsong=topsong, on_item=submitter)
 
+    #Pulling songs via ffmpeg
+    
+    print("[INFO] Downloading songs")
+    for f in as_completed(futures):
+        try:
+            result = f.result()
+            print("[OK]", result["title"], "->", result["mp3"])
+        except Exception as e:
+            print("[ERROR]", e)
 
-#add_artwork_to_mp3(get_latest_mp3(path),download_folder=download_folder)
-#ächeck_and_download_songs(driver, url=url, path=path, topsong=topsong)
-#audiofile = eyed3.load('/home/glockstein/Songs/Santigold - Disparate Youth [Rave Edit] (FREE DL).mp3')
-#print(audiofile.tag.images)
+driver.quit()
+executor.shutdown(wait=True)
+
