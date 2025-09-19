@@ -165,7 +165,7 @@ def getSongUrl(driver, url, topsong, on_item=None):
     seen_hrefs = set()
     items = []
 
-    max_scrolls = 4
+    max_scrolls = 400
     min_wait_new = 0.5
     wait = WebDriverWait(driver, 10)
 
@@ -186,7 +186,7 @@ def getSongUrl(driver, url, topsong, on_item=None):
                 title = a.text.strip()
                 seen_hrefs.add(href)
                 items.append({"title": title, "href": href})
-                print(f"FOUND: {title} -> {href}")
+                #print(f"FOUND: {title} -> {href}")
 
                 if on_item:
                     try:
@@ -242,7 +242,7 @@ def make_download_job():
 
 def submitter(title, href):
     #fut = executor.submit(make_download_job(), title, href, out_dir=path)
-    fut = executor.submit(script2.process_track,href, client_id="3WvMqSrX1K9rBNLGUNhUO9KRbVOUR9uT", out_dir=path, title_override=title)
+    fut = executor.submit(script2.process_track,href, client_id="mg5RmQDKnOD3dXz4KznIAhJHDDR00P7u", out_dir=path, title_override=title)
     futures.append(fut)
     return fut
 
@@ -258,6 +258,7 @@ def process_track(href: str, client_id: str, out_dir: str = ".", title_override:
     End-to-End: resolve -> Cover laden -> m3u8 holen -> ffmpeg -> MP3.
     Gibt Pfade zurück.
     """
+    print(f"[DEBUG] Processing track href: {href}, title_override: {title_override}")
     track = resolve_track(href, client_id)
     title = title_override or track.get("title") or "track"
     base = slugify(title)
@@ -346,6 +347,7 @@ if __name__ == "__main__":
     
     print("[INFO] Downloading songs")
     for f in as_completed(futures):
+        #print(f"[DEBUG] Futures : {f}")
         try:
             result = f.result()
             print("[OK]", result["title"], "->", result["mp3"])

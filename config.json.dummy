@@ -1,0 +1,7 @@
+A working config specifying the playlist, output_directory and the topsong to stop when reached (ascending)
+EXCLUDE the ".dummy"-part and insert wanted specifics
+{
+    "url": "https://soundcloud.com/user352647366/likes",
+    "path": "/home/<USER>/Songs",
+    "topsong": "https://soundcloud.com/user-740540958-875095644/bubble-gum-haze-trance-edit"
+}
